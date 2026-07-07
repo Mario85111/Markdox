@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Consolas', 'Cascadia Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
+  --font-mono: 'Consolas', 'Cascadia Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
+}
+
+:root {
+  /* Paleta EGA / Norton Commander */
+  --nc-bg: #0000a8;
+  --nc-border: #55ffff;   /* jaskrawy cyan — podwójne ramki */
+  --nc-text: #d6f6f6;
+  --nc-dim: #7fbcbc;
+  --nc-yellow: #ffff55;
+  --nc-white: #ffffff;
+  --nc-green: #55ff55;
+  --nc-red: #ff5555;
+  --nc-magenta: #ff55ff;
+  --nc-gray: #a8a8a8;
+  --nc-cyan-solid: #00a8a8;
+  --nc-sel-bg: #00a8a8;
+  --nc-sel-fg: #000000;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.35;
+  background: var(--nc-bg);
+  color: var(--nc-text);
+  -webkit-font-smoothing: none;
+}
+
+/* Delikatne skanlinie CRT */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.14) 0px,
+    rgba(0, 0, 0, 0.14) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: 0.35;
+  mix-blend-mode: multiply;
+}
+
+@keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.blink { animation: blink 1s steps(1) infinite; }
+
+/* ——— panele ——— */
+.nc-panel {
+  position: relative;
+  border: 3px double var(--nc-border);
+  background: var(--nc-bg);
+}
+.nc-panel.active { border-color: var(--nc-yellow); }
+
+.nc-title {
+  position: absolute;
+  top: -0.85em;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--nc-cyan-solid);
+  color: #000;
+  font-weight: 700;
+  padding: 0 10px;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ——— wiersze plików ——— */
+.nc-row { cursor: pointer; }
+.nc-row:hover { background: rgba(85, 255, 255, 0.1); }
+.nc-row.sel { background: var(--nc-sel-bg); color: #000 !important; }
+.nc-row.sel * { color: #000 !important; }
+
+/* ——— pasek klawiszy F ——— */
+.fnbar { display: flex; user-select: none; }
+.fnkey {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+}
+.fnkey .num { color: var(--nc-white); padding: 0 2px 0 6px; }
+.fnkey .lbl {
+  background: var(--nc-cyan-solid);
+  color: #000;
+  flex: 1 1 0;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fnkey:hover .lbl { background: var(--nc-yellow); }
+.fnkey:disabled { opacity: 0.5; cursor: default; }
+.fnkey:disabled:hover .lbl { background: var(--nc-cyan-solid); }
+
+/* ——— dialog ——— */
+.nc-dialog {
+  border: 3px double var(--nc-border);
+  background: var(--nc-bg);
+  box-shadow: 6px 3px 0 rgba(0, 0, 0, 0.55);
+}
+.nc-input {
+  background: #000000;
+  color: var(--nc-yellow);
+  border: 1px solid var(--nc-border);
+  padding: 2px 8px;
+  font: inherit;
+  width: 100%;
+}
+.nc-input:focus { outline: none; background: #001018; box-shadow: inset 0 0 0 1px var(--nc-yellow); }
+.nc-btn {
+  background: var(--nc-cyan-solid);
+  color: #000;
+  border: 1px solid var(--nc-border);
+  padding: 1px 14px;
+  font: inherit;
+  cursor: pointer;
+  font-weight: 700;
+}
+.nc-btn:hover { background: var(--nc-yellow); }
+.nc-btn.primary { background: var(--nc-yellow); }
+.nc-btn.primary:hover { background: var(--nc-white); }
+
+/* segmenty (przełącznik trybu) */
+.nc-seg {
+  border: 1px solid var(--nc-border);
+  padding: 1px 10px;
+  cursor: pointer;
+  color: var(--nc-text);
+  background: transparent;
+  font: inherit;
+}
+.nc-seg.on { background: var(--nc-cyan-solid); color: #000; font-weight: 700; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--nc-bg); }
+::-webkit-scrollbar-thumb { background: var(--nc-cyan-solid); border: 2px solid var(--nc-bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--nc-border); }

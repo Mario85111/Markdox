@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+
+# Databases & local data
+pgdata/
+*.db
+
+# Node / React
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+
+# Environment variables
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Agent and backup files
+.claude/
+_backup_gravity_rag/
+*.txt
+*.txt.md
+i1.md.txt
+i2.md
+i2.txt
+

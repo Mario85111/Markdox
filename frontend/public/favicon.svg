@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" shape-rendering="crispEdges">
+  <rect width="32" height="32" fill="#0000a8"/>
+
+  <!-- podwójna ramka NC -->
+  <rect x="1" y="1" width="30" height="30" fill="none" stroke="#55ffff" stroke-width="1.4"/>
+  <rect x="3" y="3" width="26" height="26" fill="none" stroke="#55ffff" stroke-width="1"/>
+
+  <!-- blokowa litera M, pikselowa -->
+  <g fill="#ffff55">
+    <rect x="8"  y="9"  width="3" height="3"/>
+    <rect x="8"  y="12" width="3" height="3"/>
+    <rect x="8"  y="15" width="3" height="3"/>
+    <rect x="8"  y="18" width="3" height="3"/>
+
+    <rect x="11" y="12" width="3" height="3"/>
+    <rect x="14" y="15" width="3" height="3"/>
+    <rect x="17" y="12" width="3" height="3"/>
+
+    <rect x="21" y="9"  width="3" height="3"/>
+    <rect x="21" y="12" width="3" height="3"/>
+    <rect x="21" y="15" width="3" height="3"/>
+    <rect x="21" y="18" width="3" height="3"/>
+  </g>
+
+  <!-- pasek statusu na dole, jak F-key bar -->
+  <rect x="3" y="24" width="26" height="3" fill="#00a8a8"/>
+</svg>
