@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+pymupdf
+pymupdf4llm
+charset-normalizer
+python-docx
+python-pptx
+Pillow
+httpx
+google-genai
+anthropic
+pytest

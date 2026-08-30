@@ -1,5 +1,5 @@
 """Wykrywanie typu pliku i wyboru toru konwersji (A = cyfrowy, B = skan/OCR)."""
-import fitz  # PyMuPDF
+import pymupdf
 
 TRACK_A_EXTS = {"docx", "pptx", "txt", "md", "markdown"}
 IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif"}
@@ -12,7 +12,7 @@ def get_ext(filename: str) -> str:
 def pdf_has_text_layer(file_bytes: bytes) -> bool:
     """True, jeśli PDF ma warstwę tekstową (choć jedna strona z tekstem)."""
     try:
-        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+        with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
             for page in doc:
                 if page.get_text().strip():
                     return True

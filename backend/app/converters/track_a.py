@@ -2,9 +2,12 @@
 
 Deterministyczne parsery, bez AI, offline.
 """
+import codecs
 import io
 
-import fitz  # PyMuPDF
+import charset_normalizer
+import pymupdf
+import pymupdf4llm
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -107,8 +110,19 @@ def pptx_to_md(file_bytes: bytes) -> str:
     prs = Presentation(io.BytesIO(file_bytes))
     slides_md: list[str] = []
     for i, slide in enumerate(prs.slides, start=1):
-        lines = [f"## Slajd {i}", ""]
+        # Tytuł slajdu to kotwica semantyczna chunka — musi być nagłówkiem.
+        # Wcześniej lądował wśród punktorów, a jedynym nagłówkiem było
+        # "## Slajd N", czyli etykieta bez treści, powtarzalna w każdej talii.
+        title_shape = slide.shapes.title
+        title = (title_shape.text or "").strip() if title_shape is not None else ""
+        # Porównujemy element XML, nie obiekt: `shapes.title` tworzy przy każdym
+        # odwołaniu nowe opakowanie, więc `is` na kształcie zawsze dałoby False
+        # i tytuł trafiłby do wyniku drugi raz, jako punktor.
+        title_el = title_shape.element if title_shape is not None else None
+        lines = [f"## {title}" if title else f"## Slajd {i}", ""]
         for shape in slide.shapes:
+            if title_el is not None and shape.element is title_el:
+                continue
             if shape.has_table:
                 lines.append(_pptx_table_md(shape.table))
                 lines.append("")
@@ -126,31 +140,103 @@ def pptx_to_md(file_bytes: bytes) -> str:
 
 # ---------- PDF (warstwa tekstowa) ----------
 
+def pdf_to_pages(file_bytes: bytes) -> list[str]:
+    """PDF → Markdown, strona po stronie.
+
+    Zamiast ręcznego sortowania bloków po (y, x) używamy pymupdf4llm:
+    rozpoznaje kolejność czytania w układach wielokolumnowych, wyprowadza
+    nagłówki z rozmiaru czcionki i wyciąga tabele jako GFM. Poprzednie
+    sortowanie przeplatało kolumny i sklejało niepowiązane zdania
+    w jeden akapit, co w RAG dawało chunki bez sensu.
+    """
+    with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
+        chunks = pymupdf4llm.to_markdown(
+            doc,
+            page_chunks=True,     # potrzebne do numerów stron w prowenancji
+            ignore_images=True,   # placeholdery obrazów to szum dla RAG
+            show_progress=False,
+        )
+    return [(c.get("text") or "").strip() for c in chunks]
+
+
 def pdf_text_to_md(file_bytes: bytes) -> str:
-    pages: list[str] = []
-    with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-        for page in doc:
-            blocks = page.get_text("blocks")
-            blocks = sorted(blocks, key=lambda b: (round(b[1]), round(b[0])))
-            para = []
-            for b in blocks:
-                text = (b[4] or "").strip()
-                if text:
-                    para.append(" ".join(text.split()))
-            if para:
-                pages.append("\n\n".join(para))
-    return "\n\n---\n\n".join(pages).strip()
+    """Wersja płaska — strony rozdzielone poziomą linią."""
+    return "\n\n---\n\n".join(p for p in pdf_to_pages(file_bytes) if p).strip()
 
 
 # ---------- TXT / MD ----------
 
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+# Kandydaci realistyczni dla dokumentów polskich i angielskich.
+_CANDIDATES = ("cp1250", "iso-8859-2", "cp1252", "cp852")
+
+_PL_DIACRITICS = set("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ")
+# Znaki dopuszczalne w prozie poza literami ASCII, cyframi i białymi znakami.
+_PUNCT_OK = set(".,;:!?-–—()[]{}\"'„”“…/\\@#%&*+=<>|~^$§°€£©®№ ")
+
+
+def _plausibility(text: str) -> int:
+    """Ocena, na ile tekst wygląda na polską lub angielską prozę.
+
+    Detektory ogólnego przeznaczenia mylą kodowania jednobajtowe:
+    dla polskiego zdania wskazują cp1257 czy iso8859-10, bo statystyka
+    bajtów jest niemal identyczna. Wiedza o docelowym języku rozstrzyga
+    to, czego statystyka rozstrzygnąć nie potrafi.
+    """
+    score = 0
+    for ch in text:
+        if ch in _PL_DIACRITICS:
+            score += 3                      # mocny sygnał poprawnego dekodowania
+        elif ch.isascii() and (ch.isalnum() or ch.isspace()) or ch in _PUNCT_OK:
+            continue
+        elif ch.isprintable():
+            score -= 4                      # znak spoza repertuaru — pewnie mojibake
+        else:
+            score -= 10                     # znak sterujący w pliku tekstowym
+    return score
+
+
 def text_passthrough(file_bytes: bytes) -> str:
-    for enc in ("utf-8", "utf-16", "windows-1250", "iso-8859-2"):
-        try:
+    """Dekoduje plik tekstowy — bez cichego psucia znaków.
+
+    Poprzednia wersja próbowała kodowań po kolei, ale cp1250 jest
+    jednobajtowe i praktycznie nigdy nie zgłasza błędu, więc plik
+    w ISO-8859-2 stawał się mojibake bez ostrzeżenia.
+
+    Kolejność: BOM → UTF-8 → wybór kandydata po ocenie wiarygodności
+    → detektor ogólny jako ostatnia deska ratunku → głośny błąd.
+    """
+    for bom, enc in _BOMS:
+        if file_bytes.startswith(bom):
             return file_bytes.decode(enc).strip()
+    try:
+        return file_bytes.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        pass
+
+    scored = []
+    for enc in _CANDIDATES:
+        try:
+            text = file_bytes.decode(enc)
         except UnicodeDecodeError:
             continue
-    return file_bytes.decode("utf-8", errors="replace").strip()
+        scored.append((_plausibility(text), text))
+    if scored:
+        best_score, best_text = max(scored, key=lambda pair: pair[0])
+        if best_score >= 0:
+            return best_text.strip()
+
+    fallback = charset_normalizer.from_bytes(file_bytes).best()
+    if fallback is None:
+        raise ValueError(
+            "Nie rozpoznano kodowania pliku tekstowego — zapisz go w UTF-8."
+        )
+    return str(fallback).strip()
 
 
 # ---------- dispatcher ----------

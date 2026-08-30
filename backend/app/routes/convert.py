@@ -21,6 +21,7 @@ async def convert(
     ai_base_url: str = Form(""),
     ai_model: str = Form(""),
     ocr_lang: str = Form(""),
+    rag_mode: bool = Form(False),   # układ wyjścia pod chunking w RAG
 ):
     if not files:
         raise HTTPException(status_code=400, detail="Nie przesłano żadnych plików.")
@@ -40,6 +41,7 @@ async def convert(
         "ai_model": ai_model,
         "ocr_lang": ocr_lang or settings.DEFAULT_OCR_LANG,
         "ocr_threshold": settings.OCR_CONF_THRESHOLD,
+        "rag_mode": rag_mode,
     }
 
     results = []

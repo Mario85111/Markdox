@@ -35,9 +35,9 @@ dist-ssr/
 # Agent and backup files
 .claude/
 _backup_gravity_rag/
-*.txt
-*.txt.md
-i1.md.txt
-i2.md
-i2.txt
+# Uwaga: nie wolno tu wpisać `*.txt` — ta reguła wykluczała
+# backend/requirements.txt, przez co repozytorium nie dało się zainstalować.
+/i1.md.txt
+/i2.md
+/i2.txt
 
