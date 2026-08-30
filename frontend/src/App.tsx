@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { isImageName, ocrImageFile, ocrPdfFile } from './ocrClient'
+import { isImageName, ocrImageFile, ocrPdfFile, type OcrPage } from './ocrClient'
 
 const API_BASE = 'http://localhost:8000/api'
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,.docx,.pptx,.txt,.md'
@@ -39,6 +39,35 @@ interface AiSettings {
   localModel: string
   baseUrl: string
   ocrLang: string
+  ragMode: boolean
+}
+
+// Montaż wyniku OCR przeglądarkowego. Odpowiednik `postprocess.assemble`
+// z backendu, ograniczony do prowenancji i znaczników stron — heurystyki
+// żywej paginy nie duplikujemy tu celowo (patrz README).
+function assembleClientMd(source: string, pages: OcrPage[], ragMode: boolean): string {
+  const filled = pages.map((p, i) => ({ n: i + 1, text: p.markdown.trim() })).filter((p) => p.text)
+  // Pewność OCR w prowenancji pozwala odfiltrować słabe skany przed indeksacją.
+  const scored = pages.filter((p) => p.markdown.trim())
+  const confidence = scored.length
+    ? Math.round(scored.reduce((a, p) => a + p.confidence, 0) / scored.length)
+    : null
+  const front = [
+    '---',
+    `source: "${source.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+    'track: "B"',
+    `pages: ${pages.length}`,
+    'used_ai: false',
+    'client_ocr: true',
+    ...(confidence === null ? [] : [`ocr_confidence: ${confidence}`]),
+    'converter: "markdox"',
+    `converted_at: "${new Date().toISOString().replace(/\.\d+Z$/, '+00:00')}"`,
+    '---',
+  ].join('\n')
+  const body = ragMode
+    ? filled.map((p) => `<!-- markdox:strona ${p.n} -->\n\n${p.text}`).join('\n\n')
+    : filled.map((p) => p.text).join('\n\n---\n\n')
+  return `${front}\n\n${body}`.trim()
 }
 
 // Sugerowane modele wizyjne per dostawca (do datalisty; można wpisać własny).
@@ -66,6 +95,7 @@ const DEFAULT_AI: AiSettings = {
   localModel: '',
   baseUrl: 'http://localhost:11434/v1',
   ocrLang: 'pol+eng',
+  ragMode: false,
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10)
@@ -154,6 +184,7 @@ function App() {
   const buildAiFields = (fd: FormData) => {
     fd.append('ai_mode', ai.mode)
     fd.append('ocr_lang', ai.ocrLang)
+    fd.append('rag_mode', String(ai.ragMode))
     if (ai.mode === 'off') return
     if (ai.mode === 'local') {
       fd.append('ai_provider', 'openai')
@@ -174,7 +205,9 @@ function App() {
   const mdName = (name: string) =>
     (name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name) + '.md'
 
-  const synthResult = (name: string, markdown: string): ConvResult => ({
+  // `hasText` jest przekazywane osobno: wynik zawiera front-matter, więc
+  // sam markdown nigdy nie jest pusty i nie nadaje się na wskaźnik pustki.
+  const synthResult = (name: string, markdown: string, hasText: boolean, confidence: number | null = null): ConvResult => ({
     filename: name,
     markdown_filename: mdName(name),
     status: 'ok',
@@ -182,23 +215,29 @@ function App() {
     markdown,
     used_ai: false,
     client_ocr: true,
-    ocr_confidence: null,
-    warning: markdown.trim() ? null : 'OCR nie wykrył tekstu na skanie.',
+    ocr_confidence: confidence,
+    warning: hasText ? null : 'OCR nie wykrył tekstu na skanie.',
     error: null,
   })
 
   const runClientOcr = async (item: QueueItem) => {
     try {
-      const md = isImageName(item.name)
-        ? await ocrImageFile(item.file, ai.ocrLang, (p) => patchItem(item.id, { progress: p }))
+      const pages = isImageName(item.name)
+        ? [await ocrImageFile(item.file, ai.ocrLang, (p) => patchItem(item.id, { progress: p }))]
         : await ocrPdfFile(item.file, ai.ocrLang, (p) => patchItem(item.id, { progress: p }))
-      patchItem(item.id, { status: 'done', progress: undefined, result: synthResult(item.name, md) })
+      const md = assembleClientMd(item.name, pages, ai.ragMode)
+      const hasText = pages.some((p) => p.markdown.trim())
+      const scored = pages.filter((p) => p.markdown.trim())
+      const confidence = scored.length
+        ? Math.round(scored.reduce((a, p) => a + p.confidence, 0) / scored.length)
+        : null
+      patchItem(item.id, { status: 'done', progress: undefined, result: synthResult(item.name, md, hasText, confidence) })
       return item.id
     } catch (e: any) {
       patchItem(item.id, {
         status: 'error',
         progress: undefined,
-        result: { ...synthResult(item.name, ''), status: 'error', error: e?.message || 'Błąd OCR w przeglądarce.' },
+        result: { ...synthResult(item.name, '', false), status: 'error', error: e?.message || 'Błąd OCR w przeglądarce.' },
       })
       return null
     }
@@ -439,6 +478,13 @@ function App() {
               {selected.result?.warning && (
                 <span style={{ color: 'var(--nc-yellow)' }}>  ⚠ {selected.result.warning}</span>
               )}
+              {selected.result?.ocr_confidence != null && (
+                <span style={{
+                  color: selected.result.ocr_confidence < 70 ? 'var(--nc-yellow)' : 'var(--nc-green)',
+                }}>
+                  {'  '}OCR {selected.result.ocr_confidence}%
+                </span>
+              )}
               {selected.result?.used_ai && <span style={{ color: 'var(--nc-magenta)' }}>  ★AI</span>}
             </>
           ) : (
@@ -593,13 +639,28 @@ function AiDialog({ ai, setAi, onClose }: {
           </div>
         )}
 
+        <label className="flex items-center gap-2 mb-2 cursor-pointer">
+          <input type="checkbox" checked={ai.ragMode}
+            onChange={(e) => setAi({ ...ai, ragMode: e.target.checked })} />
+          <span style={{ color: 'var(--nc-text)' }}>Tryb pod RAG</span>
+        </label>
+        {ai.ragMode && (
+          <div className="mb-3 text-xs p-2" style={{ color: 'var(--nc-dim)', border: '1px solid var(--nc-border)' }}>
+            Układ pod chunking: front-matter ze źródłem, numery stron jako
+            komentarze zamiast linii <b>---</b>, usuwanie powtarzalnych
+            nagłówków i stopek.
+          </div>
+        )}
+
         <Row label="Język OCR">
           <input className="nc-input" value={ai.ocrLang} placeholder="pol+eng"
             onChange={(e) => setAi({ ...ai, ocrLang: e.target.value })} />
         </Row>
 
         <div className="text-xs mt-3 mb-3" style={{ color: 'var(--nc-dim)' }}>
-          🔒 Klucz API zostaje w przeglądarce. Serwer nic nie zapisuje.
+          🔒 Klucz jest zapisany w przeglądarce i wysyłany do serwera przy
+          każdej konwersji — serwer używa go tylko w obrębie żądania,
+          nie zapisuje ani nie loguje.
         </div>
 
         <div className="flex justify-center gap-3">
