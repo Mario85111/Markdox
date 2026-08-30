@@ -17,6 +17,9 @@ import io
 
 import httpx
 
+from backend.app.config import settings
+from backend.app.converters.net_guard import validate_outbound_url
+
 OCR_PROMPT = (
     "Wyodrębnij CAŁY tekst z tego obrazu i sformatuj go jako czysty Markdown. "
     "Zachowaj strukturę: nagłówki, listy oraz tabele (tabele w składni GFM). "
@@ -88,6 +91,8 @@ def _gemini_ocr(img, options: dict) -> str:
 
 def _openai_compatible_ocr(img, options: dict) -> str:
     base_url = (options.get("ai_base_url") or "https://api.openai.com/v1").rstrip("/")
+    # Adres pochodzi od klienta — bez walidacji backend byłby proxy do sieci wewnętrznej.
+    validate_outbound_url(base_url, allow_private=settings.ALLOW_PRIVATE_AI_ENDPOINTS)
     api_key = options.get("ai_api_key") or ""
     model = options.get("ai_model") or "gpt-4o-mini"
     png = _img_to_png_bytes(img)

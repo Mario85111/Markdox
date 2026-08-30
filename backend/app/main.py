@@ -6,13 +6,14 @@ from backend.app.routes import convert
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
-# CORS — na czas developmentu zezwalamy na wszystko.
+# CORS — lista originów z konfiguracji. Aplikacja nie używa ciasteczek ani sesji,
+# więc allow_credentials pozostaje wyłączone.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 app.include_router(convert.router, prefix="/api")
