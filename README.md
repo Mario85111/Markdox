@@ -1,11 +1,11 @@
 # Markdox — Konwerter dokumentów do Markdown
 
 Web-aplikacja zamieniająca `PDF`, `JPG`, `PNG`, `DOCX`, `PPTX`, `TXT`, `MD`
-na czysty **Markdown**. Działa offline; AI (chmura lub lokalne) jest opcjonalnym
-boostem jakości dla skanów.
+na czysty **Markdown**. Działa offline; AI (chmura lub lokalne) jest opcjonalne.
 
-Aplikacja jest **bezstanowa** — żadne pliki nie są przechowywane na serwerze,
-a klucz API pozostaje wyłącznie w przeglądarce użytkownika.
+Aplikacja jest **bezstanowa** — żaden plik ani klucz nie jest zapisywany
+na serwerze. Zakres przetwarzania klucza API opisuje sekcja
+[Bezpieczeństwo i prywatność](#bezpieczeństwo-i-prywatność).
 
 ## Jak to działa — dwa tory
 
@@ -33,6 +33,133 @@ Model wybierasz z listy sugestii (lub wpisujesz własny). Wybór dostawcy jest
 konieczny — każdy ma inny protokół API; sam klucz nie wystarczy. Model musi być
 wizyjny (multimodalny), bo OCR czyta obraz.
 
+**Czy AI jest potrzebne?** Dla toru A — nie, parsery dają nagłówki i tabele
+deterministycznie. Dla skanów AI podnosi jakość, ale nie jest warunkiem
+uzyskania struktury: OCR w przeglądarce odtwarza ją z układu strony
+(patrz [OCR w przeglądarce](#ocr-w-przeglądarce)). Tryb **Lokalne** daje przy
+tym tę samą jakość co chmura, bez kosztu za stronę i bez wysyłania skanów
+na zewnątrz.
+
+## Tryb pod RAG
+
+Przełącznik w oknie **F2**. Domyślnie wyłączony — wtedy wynik jest wiernym
+odwzorowaniem dokumentu. Włączony zmienia układ pliku `.md` pod chunking:
+
+| | tryb wierny | tryb pod RAG |
+|---|---|---|
+| granica strony | pozioma linia `---` | `<!-- markdox:strona N -->` |
+| żywa pagina | zachowana | usuwana, jeśli powtarza się na ≥60% stron |
+| prowenancja | front-matter YAML | front-matter YAML |
+
+Powód rozdzielenia: `---` to dla większości splitterów twarda granica cięcia,
+więc zdanie przechodzące przez łamanie strony trafia do dwóch chunków.
+Komentarz HTML zachowuje numer strony do cytowania, nie tworząc takiej granicy.
+
+Front-matter jest dodawany **zawsze**, w obu trybach — bez niego RAG nie zbuduje
+odsyłacza do źródła:
+
+```yaml
+---
+source: "umowa.pdf"
+track: "A"
+pages: 12
+used_ai: false
+converter: "markdox"
+converted_at: "2026-08-30T05:49:47+00:00"
+---
+```
+
+Usuwanie żywej paginy jest dwupoziomowe, żeby nie kasować treści:
+w pasie krawędziowym strony dopasowanie jest **dosłowne**, a dopasowanie
+z pominięciem liczb (dla numerów stron) obowiązuje wyłącznie w linii pierwszej
+i ostatniej. Nagłówki (`#`) oraz wiersze tabel nie są nigdy usuwane — inaczej
+zniknęłyby wszystkie numerowane nagłówki typu „Rozdział 1", które po pominięciu
+cyfr są nieodróżnialne od siebie.
+
+### Czego ten tryb nie robi
+- Nie powtarza nagłówka tabeli przy podziale — to zadanie splittera, nie
+  konwertera; na etapie konwersji granice chunków nie są znane.
+- OCR w przeglądarce dostaje front-matter, znaczniki stron i odtworzoną
+  strukturę, ale **nie** usuwanie żywej paginy; ta heurystyka działa tylko
+  po stronie serwera.
+
+## Jakość konwersji
+
+### PDF
+PDF-y przechodzą przez `pymupdf4llm`: rozpoznaje kolejność czytania w układach
+wielokolumnowych, wyprowadza nagłówki z rozmiaru czcionki i wyciąga tabele jako
+GFM. Wcześniejsze sortowanie bloków po współrzędnych (y, x) przeplatało kolumny
+i potrafiło skleić zdania z dwóch kolumn w jeden akapit.
+
+Ograniczenie: rozpoznanie kolumn opiera się na analizie układu i działa
+niezawodnie przy akapitach normalnej długości. Krótkie, rozproszone pola
+tekstowe w siatce potrafią zostać zinterpretowane jako tabela albo scalone —
+w takim wypadku warto włączyć OCR przez AI, który czyta stronę jako obraz.
+
+### DOCX
+Style `Heading 1..6`, `Title` i `Subtitle` mapują się na `#`..`######`.
+Tabele trafiają do GFM. Znane ograniczenia: zagnieżdżenie list jest spłaszczane
+do jednego poziomu, a komórki scalone bywają powielane.
+
+### PPTX
+Tytuł slajdu staje się nagłówkiem `##`. Wcześniej jedynym nagłówkiem było
+`## Slajd N` — etykieta bez treści, powtarzalna w każdej prezentacji, a właściwy
+tytuł lądował wśród punktorów. Pozostałe kształty stają się listą, z wcięciem
+odpowiadającym poziomowi akapitu.
+
+### OCR w przeglądarce
+Tesseract zwraca nie tylko tekst, ale i układ strony: bloki → akapity → linie
+→ słowa, każde z `bbox` i pewnością odczytu.
+[`ocrLayout.ts`](frontend/src/ocrLayout.ts) odtwarza z tego strukturę:
+
+- **nagłówki** — z wysokości wiersza względem mediany strony
+  (≥1,8× → `#`, ≥1,35× → `##`, ≥1,15× → `###`, tylko dla wierszy ≤90 znaków),
+- **akapity** — wiersze sklejane z powrotem w zdania, z cofnięciem przeniesień
+  wyrazów; to usuwa twarde łamania linii, na których splitter ciął w połowie zdania,
+- **listy** — punktory i numeracja jako zwarta lista,
+- **`ocr_confidence`** — średnia pewność odczytu, trafia do front-mattera
+  i na pasek statusu (żółty poniżej 70%).
+
+Dwie uwagi z implementacji. Nie używamy `rowAttributes.rowHeight`: dla tego
+samego tekstu 20 px potrafi zwrócić raz 28,1, raz 18, bo zawiera zapas na
+wydłużenia liter. Stabilny jest `bbox`. Klasyfikacja idzie też po **wierszach,
+nie akapitach** — Tesseract potrafi wstawić nagłówek do tego samego akapitu
+co poprzedzająca treść.
+
+Ograniczenie: to heurystyka geometryczna. Skan przekrzywiony, wielokolumnowy
+albo o jednolitej wielkości czcionki nie da nagłówków — wtedy pomaga AI.
+
+### TXT / MD
+Kolejność rozpoznawania kodowania: BOM → UTF-8 → ocena wiarygodności kandydatów
+(`cp1250`, `iso-8859-2`, `cp1252`, `cp852`) → detektor ogólny → błąd.
+
+Ocena jest świadoma języka: punktuje polskie znaki diakrytyczne i karze znaki
+spoza repertuaru prozy. Powód — samo próbowanie kodowań po kolei nie działa,
+bo `cp1250` jest jednobajtowe i praktycznie nigdy nie zgłasza błędu, więc plik
+w `iso-8859-2` stawał się cicho mojibake. Detektory ogólnego przeznaczenia też
+nie wystarczają: dla polskiego zdania wskazują `cp1257` albo `iso8859-10`.
+Gdy żaden kandydat nie wygląda sensownie, konwersja **kończy się błędem**
+zamiast wpuszczać uszkodzony tekst do bazy.
+
+## Bezpieczeństwo i prywatność
+
+**Klucz API.** Jest przechowywany w `localStorage` przeglądarki i **przesyłany
+do backendu przy każdym żądaniu** — inaczej serwer nie mógłby wywołać modelu.
+Backend używa go wyłącznie w obrębie żądania: nie zapisuje go, nie loguje
+i nie cache'uje. Twierdzenie „klucz nie opuszcza przeglądarki" byłoby nieprawdziwe.
+Przechowywanie w `localStorage` oznacza też, że klucz jest dostępny dla kodu
+JavaScript na tej stronie.
+
+**Endpoint AI od klienta.** Pole `ai_base_url` pochodzi od użytkownika, więc
+przed każdym żądaniem wychodzącym przechodzi walidację
+([`net_guard.py`](backend/app/converters/net_guard.py)): dozwolone tylko `http`
+i `https`, sprawdzane są **wszystkie** rekordy DNS hosta, a adresy link-local
+i metadanych chmury (`169.254.0.0/16`, `fe80::/10`, CGNAT) są blokowane zawsze.
+Bez tego backend byłby proxy do sieci wewnętrznej.
+
+**CORS.** Lista originów pochodzi z konfiguracji; `allow_credentials` jest
+wyłączone, bo aplikacja nie używa sesji ani ciasteczek.
+
 ## Uruchomienie — lokalnie
 
 ### Backend (FastAPI)
@@ -42,6 +169,10 @@ python -m venv .venv
 pip install -r backend/requirements.txt
 uvicorn backend.app.main:app --reload --port 8000
 ```
+
+> `pymupdf4llm` pociąga `pymupdf_layout`, a ten `onnxruntime`, `numpy`
+> i `networkx` — razem około **90 MB** ponad samo PyMuPDF. To zależność twarda,
+> istotna przy rozmiarze obrazu Dockera.
 
 ### Frontend (React + Vite)
 ```bash
@@ -56,18 +187,82 @@ docker compose up --build
 ```
 Backend: `http://localhost:8000` · Frontend: `http://localhost:5173`
 
+> Obecna konfiguracja Dockera jest **deweloperska**: `--reload`, montowanie
+> katalogu projektu jako wolumenu i użytkownik root. Nie nadaje się w tej
+> postaci na wdrożenie produkcyjne.
+
 ## Testy
 ```bash
 pytest backend/tests -q
 ```
+- [`test_converters.py`](backend/tests/test_converters.py) — tory konwersji,
+  w tym regresje kolejności czytania w PDF i rozpoznawania kodowania.
+- [`test_postprocess.py`](backend/tests/test_postprocess.py) — żywa pagina,
+  front-matter, łączenie stron.
+- [`test_net_guard.py`](backend/tests/test_net_guard.py) — walidacja adresów
+  wychodzących.
 
 ## Limity (konfigurowalne w `.env`)
 - Maks. **10** plików na batch
 - Maks. **25 MB** na plik, **100 MB** na batch
 
+## Wdrożenie publiczne — wymagane ustawienia
+Domyślna konfiguracja zakłada, że backend działa na maszynie użytkownika.
+Przed wystawieniem go do sieci ustaw w `.env`:
+- `ALLOWED_ORIGINS` — konkretne originy frontendu (domyślnie `localhost:5173`).
+- `ALLOW_PRIVATE_AI_ENDPOINTS=false` — blokuje wskazywanie przez klienta
+  endpointów AI w sieci prywatnej. Wyłącza to tryb **Lokalne** (Ollama na
+  loopbacku), który ma sens wyłącznie przy backendzie uruchomionym lokalnie.
+
 ## API
-- `GET  /api/health` — status.
-- `POST /api/convert` — multipart: `files[]` + pola AI (`ai_mode`, `ai_provider`,
-  `ai_api_key`, `ai_base_url`, `ai_model`, `ocr_lang`). Zwraca listę wyników
-  (jeden Markdown na plik).
-- `POST /api/convert/zip` — JSON `{items:[{filename, content}]}` → paczka ZIP.
+
+### `GET /api/health`
+Status usługi.
+
+### `POST /api/convert`
+Multipart. Zwraca listę wyników — jeden Markdown na plik.
+
+| pole | domyślnie | opis |
+|---|---|---|
+| `files[]` | — | pliki do konwersji |
+| `ai_mode` | `off` | `off` \| `cloud` \| `local` |
+| `ai_provider` | `gemini` | `gemini` \| `anthropic` \| `openai` |
+| `ai_api_key` | `""` | klucz dostawcy chmurowego |
+| `ai_base_url` | `""` | endpoint zgodny z OpenAI (walidowany) |
+| `ai_model` | `""` | model wizyjny |
+| `ocr_lang` | `pol+eng` | język OCR |
+| `rag_mode` | `false` | układ wyjścia pod chunking |
+
+Odpowiedź na plik: `filename`, `markdown_filename`, `status`, `track`,
+`markdown`, `used_ai`, `client_ocr`, `ocr_confidence`, `warning`, `error`.
+
+`client_ocr: true` oznacza, że serwer nie wykonał OCR — odczyt ma zrobić
+przeglądarka.
+
+> `ocr_lang` jest po stronie serwera nieaktywne — OCR językowy wykonuje
+> przeglądarka, która czyta to ustawienie lokalnie. `ocr_confidence` jest
+> wypełniane wyłącznie na ścieżce OCR w przeglądarce; przy OCR przez model AI
+> pozostaje `null`, bo dostawcy nie zwracają miary pewności.
+
+### `POST /api/convert/zip`
+JSON `{items:[{filename, content}]}` → paczka ZIP z gotowych plików `.md`
+(bez ponownej konwersji).
+
+## Struktura projektu
+
+```
+backend/app/
+  config.py              ustawienia (limity, CORS, polityka endpointów AI)
+  routes/convert.py      endpointy /api/convert i /api/convert/zip
+  converters/
+    detect.py            wybór toru A/B na podstawie typu i warstwy tekstowej
+    service.py           orkiestracja: jeden plik → jeden wynik
+    track_a.py           docx, pptx, pdf-tekst, txt/md
+    track_b.py           rasteryzacja skanów pod OCR przez AI
+    ai_ocr.py            klienci Gemini / Anthropic / OpenAI-compatible
+    net_guard.py         walidacja adresów wychodzących (SSRF)
+    postprocess.py       żywa pagina, front-matter, łączenie stron
+frontend/src/
+  App.tsx                interfejs w stylu Norton Commandera
+  ocrClient.ts           OCR w przeglądarce (tesseract.js + pdf.js)
+```
