@@ -1,0 +1,5 @@
+# Zasoby OCR są kopiowane w postaci wydanej przez upstream (worker tesseract.js,
+# rdzeń WASM emscriptena z osadzonym base64). Przy core.autocrlf=true git
+# przerabiałby im końce linii przy każdym checkoucie — bez wartości, za to
+# ze zmianą sum kontrolnych i szumem w diffach.
+frontend/public/tesseract/** -text -diff

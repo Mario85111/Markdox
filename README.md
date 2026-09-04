@@ -13,8 +13,9 @@ na serwerze. Zakres przetwarzania klucza API opisuje sekcja
   → parsery deterministyczne, offline, bez AI.
 - **Tor B (skan/OCR):** `jpg`, `png`, `pdf`-skan.
   - Bez AI → OCR **w przeglądarce** (tesseract.js dla obrazów, pdf.js + tesseract.js
-    dla skanów PDF). Zero instalacji w systemie; model językowy pobiera się raz
-    i jest cache'owany w przeglądarce.
+    dla skanów PDF). Zero instalacji w systemie. Skrypt workera, rdzeń WASM
+    i modele językowe są serwowane z własnego origin, więc pierwszy OCR
+    również działa bez internetu (patrz [Zasoby OCR](#zasoby-ocr)).
   - Z AI → serwer rasteryzuje strony (PyMuPDF) i odczytuje modelem wizyjnym.
 
   > Backend **nie wymaga** natywnego Tesseracta.
@@ -129,6 +130,37 @@ co poprzedzająca treść.
 Ograniczenie: to heurystyka geometryczna. Skan przekrzywiony, wielokolumnowy
 albo o jednolitej wielkości czcionki nie da nagłówków — wtedy pomaga AI.
 
+### Zasoby OCR
+
+tesseract.js domyślnie pobiera w czasie działania trzy rzeczy z jsDelivr:
+skrypt workera, rdzeń WASM i model językowy. Aplikacja deklarująca pracę
+offline realizowałaby ją więc dopiero od drugiego uruchomienia — i tylko
+w tej samej przeglądarce, do pierwszego wyczyszczenia danych witryny.
+
+Dlatego wszystkie trzy są serwowane z własnego origin. Ścieżki ustawia
+[`ocrClient.ts`](frontend/src/ocrClient.ts) (`workerPath`, `corePath`,
+`langPath`), a pliki generuje `npm run ocr:assets`
+([`fetch-ocr-assets.mjs`](frontend/scripts/fetch-ocr-assets.mjs)):
+
+| zasób | skąd | rozmiar |
+|---|---|---|
+| `worker.min.js` | `node_modules/tesseract.js` | 0,1 MB |
+| rdzeń WASM, 3 warianty | `node_modules/tesseract.js-core` | 11,2 MB |
+| `pol` + `eng` `.traineddata.gz` | `@tesseract.js-data` (jsDelivr) | 5,3 MB |
+
+Worker i rdzeń idą z `node_modules`, nie z sieci — dzięki temu ich wersja
+zawsze zgadza się z zainstalowaną biblioteką. Po podbiciu `tesseract.js`
+trzeba skrypt uruchomić ponownie, inaczej worker zostanie na starej wersji.
+
+Wariantów rdzenia są trzy, bo worker wybiera go dopiero w przeglądarce, po
+wykryciu relaxed SIMD / SIMD / braku obu. Wszystkie są w odmianie `-lstm`:
+`createWorker(lang, 1, …)` to OEM 1, czyli wyłącznie model LSTM — warianty
+z modelem Legacy nie zostaną użyte i nie ma powodu ich wozić.
+
+Fallbacku na CDN nie ma: w tesseract.js `langPath` i `corePath` wchodzą
+w miejsce adresu CDN, a nie obok niego. Zła ścieżka nie powoduje cichego
+sięgnięcia do sieci — worker po prostu nie wstaje.
+
 ### TXT / MD
 Kolejność rozpoznawania kodowania: BOM → UTF-8 → ocena wiarygodności kandydatów
 (`cp1250`, `iso-8859-2`, `cp1252`, `cp852`) → detektor ogólny → błąd.
@@ -178,6 +210,7 @@ uvicorn backend.app.main:app --reload --port 8000
 ```bash
 cd frontend
 npm install
+npm run ocr:assets # jednorazowo — zasoby OCR do public/ (ok. 17 MB)
 npm run dev        # http://localhost:5173
 ```
 
@@ -217,10 +250,10 @@ Przed wystawieniem go do sieci ustaw w `.env`:
 ## API
 
 ### `GET /api/health`
-Status usługi.
+Status usługi: `{"status": "ok", "project": "<nazwa z konfiguracji>"}`.
 
 ### `POST /api/convert`
-Multipart. Zwraca listę wyników — jeden Markdown na plik.
+Multipart. Zwraca obiekt `{"results": [...]}` — jeden wpis na plik.
 
 | pole | domyślnie | opis |
 |---|---|---|
@@ -233,11 +266,18 @@ Multipart. Zwraca listę wyników — jeden Markdown na plik.
 | `ocr_lang` | `pol+eng` | język OCR |
 | `rag_mode` | `false` | układ wyjścia pod chunking |
 
-Odpowiedź na plik: `filename`, `markdown_filename`, `status`, `track`,
+Wpis w `results`: `filename`, `markdown_filename`, `status`, `track`,
 `markdown`, `used_ai`, `client_ocr`, `ocr_confidence`, `warning`, `error`.
 
 `client_ocr: true` oznacza, że serwer nie wykonał OCR — odczyt ma zrobić
 przeglądarka.
+
+Błąd pojedynczego pliku (np. przekroczony limit rozmiaru) nie przerywa batcha:
+wpis dostaje `status: "error"` i wypełnione `error`, reszta konwertuje się
+normalnie. Całe żądanie kończy się natomiast kodem `400`, gdy plików jest
+więcej niż `MAX_FILES` albo batch przekracza `MAX_BATCH_MB`. Brak samego pola
+`files` daje `422` z walidacji FastAPI — pole jest wymagane, więc żądanie nie
+dociera do kontroli w handlerze.
 
 > `ocr_lang` jest po stronie serwera nieaktywne — OCR językowy wykonuje
 > przeglądarka, która czyta to ustawienie lokalnie. `ocr_confidence` jest
@@ -246,7 +286,9 @@ przeglądarka.
 
 ### `POST /api/convert/zip`
 JSON `{items:[{filename, content}]}` → paczka ZIP z gotowych plików `.md`
-(bez ponownej konwersji).
+(bez ponownej konwersji), jako `markdox_export.zip`. Rozszerzenie `.md` jest
+dopisywane, gdy brakuje, a powtórzone nazwy dostają przyrostek `_1`, `_2` —
+inaczej drugi plik nadpisywałby pierwszy w archiwum. Pusta lista → `400`.
 
 ## Struktura projektu
 
@@ -265,4 +307,6 @@ backend/app/
 frontend/src/
   App.tsx                interfejs w stylu Norton Commandera
   ocrClient.ts           OCR w przeglądarce (tesseract.js + pdf.js)
+  scripts/fetch-ocr-assets.mjs  pobranie workera, rdzenia WASM i modeli OCR
+  public/tesseract/             te zasoby, serwowane z własnego origin
 ```

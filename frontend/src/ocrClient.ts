@@ -24,8 +24,26 @@ export interface OcrPage {
 // wyłącznie `text`, czyli tracimy nagłówki i granice akapitów.
 const OUTPUT = { text: true, blocks: true }
 
+// Zasoby OCR serwujemy z własnego origin. Domyślnie tesseract.js pobiera
+// w czasie działania trzy rzeczy z jsDelivr — skrypt workera, rdzeń WASM
+// i model językowy — więc pierwszy OCR wymagałby internetu, mimo że
+// aplikacja deklaruje pracę offline. Pliki generuje `npm run ocr:assets`.
+//
+// BASE_URL, nie ukośnik: przy wdrożeniu pod podkatalogiem stała ścieżka
+// wskazywałaby na katalog główny domeny.
+const ASSETS = `${import.meta.env.BASE_URL}tesseract`
+
+// corePath dostaje katalog, nie plik — worker sam dokleja nazwę wariantu
+// (relaxedsimd / simd / bez SIMD) po wykryciu możliwości przeglądarki.
+const WORKER_OPTIONS = {
+  workerPath: `${ASSETS}/worker.min.js`,
+  corePath: `${ASSETS}/core`,
+  langPath: `${ASSETS}/tessdata`,
+}
+
 async function makeWorker(lang: string, onProgress?: ProgressCb): Promise<Worker> {
   return createWorker(lang, 1, {
+    ...WORKER_OPTIONS,
     logger: (m) => {
       if (m.status === 'recognizing text' && onProgress) onProgress(m.progress)
     },
