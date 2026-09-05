@@ -3,7 +3,16 @@ import { isImageName, ocrImageFile, ocrPdfFile, type OcrPage } from './ocrClient
 
 const API_BASE = 'http://localhost:8000/api'
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,.docx,.pptx,.txt,.md'
-const MAX_FILES = 10
+
+// Limity przychodzą z /api/health — backend jest ich jedynym źródłem, bo to on
+// je egzekwuje. Te wartości służą wyłącznie do pierwszego renderu i na wypadek
+// niedostępnego backendu; muszą odpowiadać domyślnym z config.py.
+interface Limits {
+  maxFiles: number
+  maxUploadMb: number
+  maxBatchMb: number
+}
+const FALLBACK_LIMITS: Limits = { maxFiles: 50, maxUploadMb: 25, maxBatchMb: 100 }
 
 type Status = 'queued' | 'converting' | 'done' | 'error'
 
@@ -113,6 +122,10 @@ function App() {
   const [dragOver, setDragOver] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const [limits, setLimits] = useState<Limits>(FALLBACK_LIMITS)
+  // Identyfikatory plików objętych trwającą konwersją — bez nich pasek postępu
+  // liczyłby też pliki gotowe z poprzedniego przebiegu.
+  const [batchIds, setBatchIds] = useState<string[] | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [ai, setAi] = useState<AiSettings>(() => {
@@ -128,6 +141,24 @@ function App() {
     localStorage.setItem('markdox_ai', JSON.stringify(ai))
   }, [ai])
 
+  // Cicho: przy niedostępnym backendzie zostają wartości zapasowe, a użytkownik
+  // i tak zobaczy błąd dopiero przy konwersji — komunikat na starcie byłby
+  // hałasem, bo aplikacja bez backendu nie ma czego robić.
+  useEffect(() => {
+    fetch(`${API_BASE}/health`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const l = d?.limits
+        if (!l) return
+        setLimits({
+          maxFiles: l.max_files ?? FALLBACK_LIMITS.maxFiles,
+          maxUploadMb: l.max_upload_mb ?? FALLBACK_LIMITS.maxUploadMb,
+          maxBatchMb: l.max_batch_mb ?? FALLBACK_LIMITS.maxBatchMb,
+        })
+      })
+      .catch(() => {})
+  }, [])
+
   const showToast = (kind: 'ok' | 'err', msg: string) => {
     setToast({ kind, msg })
     setTimeout(() => setToast(null), 4500)
@@ -142,27 +173,78 @@ function App() {
     [items],
   )
 
+  const totalSize = useMemo(() => items.reduce((a, i) => a + i.size, 0), [items])
+
+  // Limit batcha dotyczy tego, co realnie poleci w żądaniu. Przy AI wyłączonym
+  // obrazy są czytane w przeglądarce i nigdy nie trafiają na serwer, więc
+  // liczenie ich do limitu blokowałoby konwersje, które przeszłyby bez problemu.
+  const uploadSize = useMemo(() => {
+    const aiOff = ai.mode === 'off'
+    return items
+      .filter((i) => i.status !== 'done')
+      .filter((i) => !(aiOff && isImageName(i.name)))
+      .reduce((a, i) => a + i.size, 0)
+  }, [items, ai.mode])
+
+  const batchLimitBytes = limits.maxBatchMb * 1024 * 1024
+  const overBatchLimit = uploadSize > batchLimitBytes
+
+  // Postęp całego batcha. Pliki obsłużone przez backend zamykają się hurtem
+  // po jednej odpowiedzi; OCR w przeglądarce idzie plik po pliku, więc dopiero
+  // przy nim pasek rusza płynnie.
+  const batchProgress = useMemo(() => {
+    if (!batchIds) return null
+    const done = items.filter(
+      (i) => batchIds.includes(i.id) && (i.status === 'done' || i.status === 'error'),
+    ).length
+    return { done, total: batchIds.length }
+  }, [items, batchIds])
+
+  const activeOcr = useMemo(
+    () => items.find((i) => i.status === 'converting' && i.progress !== undefined) || null,
+    [items],
+  )
+
+  // Liczone z `items`, nie z aktualizatora `setItems`: React potrafi wywołać
+  // aktualizator dwa razy, a wtedy toast pokazałby się podwójnie.
   const addFiles = useCallback((fileList: FileList | File[]) => {
     const incoming = Array.from(fileList)
-    setItems((prev) => {
-      const space = MAX_FILES - prev.length
-      if (space <= 0) {
-        showToast('err', `Limit ${MAX_FILES} plików osiągnięty.`)
-        return prev
-      }
-      const accepted = incoming.slice(0, space).map<QueueItem>((f) => ({
-        id: uid(),
-        file: f,
-        name: f.name,
-        size: f.size,
-        status: 'queued',
-      }))
-      if (incoming.length > space) {
-        showToast('err', `Dodano ${space} z ${incoming.length} — limit ${MAX_FILES}.`)
-      }
-      return [...prev, ...accepted]
-    })
-  }, [])
+    const space = limits.maxFiles - items.length
+    if (space <= 0) {
+      showToast('err', `Limit ${limits.maxFiles} plików osiągnięty.`)
+      return
+    }
+    const accepted = incoming.slice(0, space).map<QueueItem>((f) => ({
+      id: uid(),
+      file: f,
+      name: f.name,
+      size: f.size,
+      status: 'queued',
+    }))
+    if (incoming.length > space) {
+      showToast('err', `Dodano ${space} z ${incoming.length} — limit ${limits.maxFiles}.`)
+    }
+
+    // Pliki ponad limit pojedynczego pliku backend odrzuci osobno, nie
+    // przerywając batcha — ale lepiej powiedzieć to od razu niż po wysyłce.
+    const tooBig = accepted.filter((i) => i.size > limits.maxUploadMb * 1024 * 1024)
+    if (tooBig.length) {
+      showToast('err', `${tooBig.length} plik(i) ponad ${limits.maxUploadMb} MB — zostaną odrzucone.`)
+    }
+
+    const aiOff = ai.mode === 'off'
+    const addedUpload = accepted
+      .filter((i) => !(aiOff && isImageName(i.name)))
+      .reduce((a, i) => a + i.size, 0)
+    if (!tooBig.length && uploadSize + addedUpload > batchLimitBytes) {
+      showToast(
+        'err',
+        `Do wysłania ${humanSize(uploadSize + addedUpload)} — limit batcha to ${limits.maxBatchMb} MB. Usuń część plików.`,
+      )
+    }
+
+    setItems((prev) => [...prev, ...accepted])
+  }, [items, limits, ai.mode, uploadSize, batchLimitBytes])
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
@@ -249,6 +331,17 @@ function App() {
       showToast('err', 'Brak plików do konwersji.')
       return
     }
+    // Backend odrzuciłby cały batch kodem 400 dopiero po przesłaniu danych.
+    // Zatrzymujemy to tutaj, żeby użytkownik nie czekał na wysyłkę,
+    // która i tak nie ma prawa się udać.
+    if (overBatchLimit) {
+      showToast(
+        'err',
+        `Do wysłania ${humanSize(uploadSize)}, limit to ${limits.maxBatchMb} MB. Usuń część plików i spróbuj ponownie.`,
+      )
+      return
+    }
+    setBatchIds(toConvert.map((i) => i.id))
     setConverting(true)
     setItems((prev) =>
       prev.map((i) => (i.status !== 'done' ? { ...i, status: 'converting', progress: undefined } : i)),
@@ -306,6 +399,7 @@ function App() {
       showToast('err', e?.message || 'Błąd połączenia z serwerem.')
     } finally {
       setConverting(false)
+      setBatchIds(null)
     }
   }
 
@@ -416,7 +510,15 @@ function App() {
           onDrop={onDrop}
           className={`nc-panel flex flex-col min-h-0 ${dragOver ? 'active' : ''}`}
         >
-          <div className="nc-title">Pliki [{items.length}/{MAX_FILES}]</div>
+          <div className="nc-title">
+            Pliki [{items.length}/{limits.maxFiles}]
+            {items.length > 0 && (
+              <span style={{ color: overBatchLimit ? 'var(--nc-red)' : undefined }}>
+                {' · '}{humanSize(totalSize)}
+                {overBatchLimit && ` ▲ ponad ${limits.maxBatchMb} MB`}
+              </span>
+            )}
+          </div>
 
           {/* nagłówek kolumn */}
           <div className="flex px-2 pt-2 pb-1 shrink-0" style={{ color: 'var(--nc-yellow)' }}>
@@ -467,6 +569,9 @@ function App() {
           </div>
         </section>
       </div>
+
+      {/* Postęp batcha — tylko w trakcie konwersji */}
+      {batchProgress && <BatchProgress {...batchProgress} active={activeOcr} />}
 
       {/* Linia informacyjna + prompt */}
       <div className="shrink-0 px-1">
@@ -541,6 +646,33 @@ function statusText(item: QueueItem): { t: string; color: string } {
     case 'done': return { t: '√ gotowe', color: 'var(--nc-green)' }
     case 'error': return { t: '■ błąd', color: 'var(--nc-red)' }
   }
+}
+
+// Pasek postępu w stylu znakowym — spójny z resztą interfejsu i czytelny
+// nawet wtedy, gdy backend zamyka wiele plików jedną odpowiedzią.
+function BatchProgress({ done, total, active }: { done: number; total: number; active: QueueItem | null }) {
+  const CELLS = 28
+  const ratio = total > 0 ? done / total : 0
+  const filled = Math.round(ratio * CELLS)
+  return (
+    <div className="shrink-0 px-1" style={{ color: 'var(--nc-dim)' }}>
+      <div className="flex items-center gap-2 truncate">
+        <span style={{ color: 'var(--nc-yellow)' }}>
+          [{'█'.repeat(filled)}{'░'.repeat(CELLS - filled)}]
+        </span>
+        <span style={{ color: 'var(--nc-white)' }}>
+          {done}/{total}
+        </span>
+        <span>({Math.round(ratio * 100)}%)</span>
+        {active && (
+          <span className="truncate">
+            · OCR: <span style={{ color: 'var(--nc-white)' }}>{active.name}</span>
+            {active.progress !== undefined && ` ${Math.round(active.progress * 100)}%`}
+          </span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function FileRow({ item, selected, onSelect }: { item: QueueItem; selected: boolean; onSelect: () => void }) {

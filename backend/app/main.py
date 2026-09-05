@@ -21,4 +21,16 @@ app.include_router(convert.router, prefix="/api")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "project": settings.PROJECT_NAME}
+    # Limity wychodzą stąd, żeby frontend nie trzymał własnej kopii. Wcześniej
+    # MAX_FILES był zapisany po obu stronach i przy zmianie jednej z nich
+    # użytkownik albo dostawał martwy limit w UI, albo odrzucenie batcha
+    # dopiero po wysłaniu plików.
+    return {
+        "status": "ok",
+        "project": settings.PROJECT_NAME,
+        "limits": {
+            "max_files": settings.MAX_FILES,
+            "max_upload_mb": settings.MAX_UPLOAD_MB,
+            "max_batch_mb": settings.MAX_BATCH_MB,
+        },
+    }

@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Markdox — Konwerter do Markdown"
 
     # Limity (konfigurowalne przez .env) — zgodne z briefem
-    MAX_FILES: int = 10            # maks. plików na jeden batch
+    MAX_FILES: int = 50            # maks. plików na jeden batch
     MAX_UPLOAD_MB: int = 25        # maks. rozmiar pojedynczego pliku
     MAX_BATCH_MB: int = 100        # maks. łączny rozmiar batcha
 

@@ -236,7 +236,7 @@ pytest backend/tests -q
   wychodzących.
 
 ## Limity (konfigurowalne w `.env`)
-- Maks. **10** plików na batch
+- Maks. **50** plików na batch
 - Maks. **25 MB** na plik, **100 MB** na batch
 
 ## Wdrożenie publiczne — wymagane ustawienia
@@ -250,7 +250,19 @@ Przed wystawieniem go do sieci ustaw w `.env`:
 ## API
 
 ### `GET /api/health`
-Status usługi: `{"status": "ok", "project": "<nazwa z konfiguracji>"}`.
+Status usługi wraz z obowiązującymi limitami:
+
+```json
+{
+  "status": "ok",
+  "project": "<nazwa z konfiguracji>",
+  "limits": { "max_files": 50, "max_upload_mb": 25, "max_batch_mb": 100 }
+}
+```
+
+Frontend czyta stąd limity zamiast trzymać własną kopię. Wcześniej `MAX_FILES`
+był zapisany po obu stronach i przy zmianie jednej z nich użytkownik dostawał
+albo martwy limit w UI, albo odrzucenie batcha dopiero po wysłaniu plików.
 
 ### `POST /api/convert`
 Multipart. Zwraca obiekt `{"results": [...]}` — jeden wpis na plik.
