@@ -109,6 +109,35 @@ const DEFAULT_AI: AiSettings = {
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 
+// Ile plików najwyżej idzie w jednym żądaniu. Wartość jest kompromisem: mniej
+// znaczy częstsze odświeżanie paska, ale więcej rund sieciowych. Cztery daje
+// widoczny ruch nawet przy ciężkich PDF-ach, gdzie jeden plik potrafi zająć
+// kilkanaście sekund w pymupdf4llm.
+const CHUNK_FILES = 4
+// Zapas względem limitu serwera, żeby pojedyncza partia nigdy go nie dotknęła.
+const CHUNK_MB_RATIO = 0.5
+
+/** Dzieli pliki na partie ograniczone liczbą i łącznym rozmiarem. */
+function chunkForUpload<T extends { size: number }>(list: T[], maxBatchMb: number): T[][] {
+  const capBytes = Math.max(1, maxBatchMb * CHUNK_MB_RATIO) * 1024 * 1024
+  const out: T[][] = []
+  let cur: T[] = []
+  let curBytes = 0
+  for (const item of list) {
+    // Plik większy od zapasu jedzie sam — dzielenie go nie jest możliwe,
+    // a doklejanie do innych tylko zwiększa ryzyko odrzucenia partii.
+    if (cur.length && (cur.length >= CHUNK_FILES || curBytes + item.size > capBytes)) {
+      out.push(cur)
+      cur = []
+      curBytes = 0
+    }
+    cur.push(item)
+    curBytes += item.size
+  }
+  if (cur.length) out.push(cur)
+  return out
+}
+
 const humanSize = (b: number) => {
   if (b < 1024) return `${b} B`
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)}K`
@@ -239,7 +268,7 @@ function App() {
     if (!tooBig.length && uploadSize + addedUpload > batchLimitBytes) {
       showToast(
         'err',
-        `Do wysłania ${humanSize(uploadSize + addedUpload)} — limit batcha to ${limits.maxBatchMb} MB. Usuń część plików.`,
+        `Do przerobienia ${humanSize(uploadSize + addedUpload)} — konwersja zajmie sporo czasu.`,
       )
     }
 
@@ -331,15 +360,11 @@ function App() {
       showToast('err', 'Brak plików do konwersji.')
       return
     }
-    // Backend odrzuciłby cały batch kodem 400 dopiero po przesłaniu danych.
-    // Zatrzymujemy to tutaj, żeby użytkownik nie czekał na wysyłkę,
-    // która i tak nie ma prawa się udać.
+    // Duży batch nie jest już powodem do odmowy — wysyłka idzie partiami,
+    // więc żadne pojedyncze żądanie nie dotknie limitu serwera. Ostrzegamy
+    // tylko o tym, że to potrwa.
     if (overBatchLimit) {
-      showToast(
-        'err',
-        `Do wysłania ${humanSize(uploadSize)}, limit to ${limits.maxBatchMb} MB. Usuń część plików i spróbuj ponownie.`,
-      )
-      return
+      showToast('ok', `Do przerobienia ${humanSize(uploadSize)} — to potrwa. Wyniki pojawią się partiami.`)
     }
     setBatchIds(toConvert.map((i) => i.id))
     setConverting(true)
@@ -353,24 +378,49 @@ function App() {
     let firstDoneId: string | null = null
     const pdfsForClient: QueueItem[] = []
 
+    let hardError: string | null = null
+
     try {
-      if (backendItems.length > 0) {
+      // Partiami, nie jednym żądaniem. Backend odpowiada dopiero po przerobieniu
+      // wszystkiego, co dostał, więc przy 30 dokumentach jedno żądanie oznaczało
+      // pasek stojący na zero przez całą konwersję — nie do odróżnienia od zawieszenia.
+      // Przy okazji wyniki pojawiają się na bieżąco, a nie dopiero na końcu.
+      for (const chunk of chunkForUpload(backendItems, limits.maxBatchMb)) {
         const fd = new FormData()
-        backendItems.forEach((i) => fd.append('files', i.file, i.name))
+        chunk.forEach((i) => fd.append('files', i.file, i.name))
         buildAiFields(fd)
-        const res = await fetch(`${API_BASE}/convert`, { method: 'POST', body: fd })
-        if (!res.ok) {
-          const detail = await res.json().catch(() => null)
-          throw new Error(detail?.detail || `Błąd serwera (${res.status})`)
+
+        let data: { results: ConvResult[] }
+        try {
+          const res = await fetch(`${API_BASE}/convert`, { method: 'POST', body: fd })
+          if (!res.ok) {
+            const detail = await res.json().catch(() => null)
+            throw new Error(detail?.detail || `Błąd serwera (${res.status})`)
+          }
+          data = await res.json()
+        } catch (e: any) {
+          // Partia pada osobno — reszta batcha idzie dalej. Inaczej jeden
+          // uszkodzony plik przekreślałby dziesiątki poprawnych.
+          const msg = e?.message || 'Błąd połączenia z serwerem.'
+          hardError = msg
+          const failed = new Set(chunk.map((i) => i.id))
+          setItems((prev) =>
+            prev.map((i) =>
+              failed.has(i.id) && i.status === 'converting'
+                ? { ...i, status: 'error', result: { ...synthResult(i.name, '', false), status: 'error', track: '?', client_ocr: false, error: msg } }
+                : i,
+            ),
+          )
+          continue
         }
-        const data: { results: ConvResult[] } = await res.json()
+
         const byName = new Map<string, ConvResult[]>()
         data.results.forEach((r) => {
           const arr = byName.get(r.filename) || []
           arr.push(r)
           byName.set(r.filename, arr)
         })
-        const assignments = backendItems.map((item) => ({ item, r: byName.get(item.name)?.shift() }))
+        const assignments = chunk.map((item) => ({ item, r: byName.get(item.name)?.shift() }))
         assignments.forEach((a) => {
           if (a.r?.client_ocr) pdfsForClient.push(a.item)
           else if (a.r?.status === 'ok' && !firstDoneId) firstDoneId = a.item.id
@@ -393,7 +443,8 @@ function App() {
       }
 
       if (firstDoneId && !selectedId) setSelectedId(firstDoneId)
-      showToast('ok', 'Konwersja zakończona.')
+      if (hardError) showToast('err', `Część plików nie przeszła: ${hardError}`)
+      else showToast('ok', 'Konwersja zakończona.')
     } catch (e: any) {
       setItems((prev) => prev.map((i) => (i.status === 'converting' ? { ...i, status: 'error' } : i)))
       showToast('err', e?.message || 'Błąd połączenia z serwerem.')
@@ -515,7 +566,7 @@ function App() {
             {items.length > 0 && (
               <span style={{ color: overBatchLimit ? 'var(--nc-red)' : undefined }}>
                 {' · '}{humanSize(totalSize)}
-                {overBatchLimit && ` ▲ ponad ${limits.maxBatchMb} MB`}
+                {overBatchLimit && ' ▲ duży batch'}
               </span>
             )}
           </div>
