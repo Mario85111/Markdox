@@ -173,6 +173,35 @@ nie wystarczają: dla polskiego zdania wskazują `cp1257` albo `iso8859-10`.
 Gdy żaden kandydat nie wygląda sensownie, konwersja **kończy się błędem**
 zamiast wpuszczać uszkodzony tekst do bazy.
 
+## Wysyłka partiami
+
+`/api/convert` przerabia wszystko, co dostał, i odpowiada dopiero na końcu.
+Przy jednym żądaniu na cały batch oznaczało to, że przy trzydziestu
+dokumentach biurowych wskaźnik postępu stał na zerze przez kilka minut —
+konwersja szła poprawnie, ale wyglądała na zawieszoną. Dla toru A, czyli
+głównego zastosowania aplikacji, licznik nie ruszał się ani razu.
+
+Frontend dzieli więc pliki na partie po **cztery**, dodatkowo ograniczone
+łącznym rozmiarem (połowa `MAX_BATCH_MB`, żeby pojedyncza partia nigdy nie
+dotknęła limitu serwera). Plik większy od tego zapasu jedzie sam.
+
+Konsekwencje, wszystkie zamierzone:
+
+- pasek postępu przesuwa się po każdej partii, a nie raz na końcu,
+- wyniki pojawiają się na bieżąco — pierwsze pliki można podejrzeć, zanim
+  reszta się skończy,
+- **błąd partii nie przekreśla batcha**: pliki z nieudanego żądania dostają
+  status błędu, pozostałe konwertują się dalej,
+- łączny rozmiar zadania może przekroczyć `MAX_BATCH_MB`, bo limit obowiązuje
+  per żądanie. Duży batch daje ostrzeżenie o czasie trwania, nie odmowę.
+
+Czas konwersji to koszt parserów, nie narzut aplikacji — `pymupdf4llm` ciągnie
+`pymupdf_layout` i `onnxruntime`, które analizują układ każdej strony.
+Podział na partie tego nie skraca; sprawia tylko, że widać postęp.
+
+Progresu **wewnątrz** jednej partii nie ma i bez zmiany API nie będzie —
+wymagałby strumieniowania odpowiedzi albo osobnego kanału na zdarzenia.
+
 ## Bezpieczeństwo i prywatność
 
 **Klucz API.** Jest przechowywany w `localStorage` przeglądarki i **przesyłany
@@ -214,6 +243,12 @@ npm run ocr:assets # jednorazowo — zasoby OCR do public/ (ok. 17 MB)
 npm run dev        # http://localhost:5173
 ```
 
+Adres backendu bierze się z `VITE_API_BASE`, a gdy zmiennej nie ma —
+z `http://localhost:8000/api`. Domyślny przypadek nie wymaga więc żadnej
+konfiguracji. Vite podstawia tę wartość **w czasie budowania**, nie startu,
+więc po zmianie `.env` trzeba przebudować frontend (wzór:
+[`frontend/.env.example`](frontend/.env.example)).
+
 ## Uruchomienie — Docker
 ```bash
 docker compose up --build
@@ -236,8 +271,17 @@ pytest backend/tests -q
   wychodzących.
 
 ## Limity (konfigurowalne w `.env`)
-- Maks. **10** plików na batch
-- Maks. **25 MB** na plik, **100 MB** na batch
+- Maks. **50** plików na batch
+- Maks. **25 MB** na plik, **100 MB** na jedno żądanie
+
+Limity są egzekwowane przez backend i wystawiane w `/api/health` — frontend
+je stamtąd czyta, zamiast trzymać własną kopię.
+
+Ograniczenie **100 MB dotyczy pojedynczego żądania**, nie tego, co użytkownik
+wrzuci na listę. Frontend dzieli wysyłkę na partie (patrz
+[Wysyłka partiami](#wysyłka-partiami)), więc łączny rozmiar zadania może być
+większy. Do limitu nie wliczają się też skany czytane w przeglądarce — te
+nigdy nie trafiają na serwer.
 
 ## Wdrożenie publiczne — wymagane ustawienia
 Domyślna konfiguracja zakłada, że backend działa na maszynie użytkownika.
@@ -247,10 +291,26 @@ Przed wystawieniem go do sieci ustaw w `.env`:
   endpointów AI w sieci prywatnej. Wyłącza to tryb **Lokalne** (Ollama na
   loopbacku), który ma sens wyłącznie przy backendzie uruchomionym lokalnie.
 
+Po stronie frontendu ustaw `VITE_API_BASE` na publiczny adres backendu
+i przebuduj — domyślny `localhost:8000` wskazuje na maszynę odwiedzającego,
+nie na serwer.
+
 ## API
 
 ### `GET /api/health`
-Status usługi: `{"status": "ok", "project": "<nazwa z konfiguracji>"}`.
+Status usługi wraz z obowiązującymi limitami:
+
+```json
+{
+  "status": "ok",
+  "project": "<nazwa z konfiguracji>",
+  "limits": { "max_files": 50, "max_upload_mb": 25, "max_batch_mb": 100 }
+}
+```
+
+Frontend czyta stąd limity zamiast trzymać własną kopię. Wcześniej `MAX_FILES`
+był zapisany po obu stronach i przy zmianie jednej z nich użytkownik dostawał
+albo martwy limit w UI, albo odrzucenie batcha dopiero po wysłaniu plików.
 
 ### `POST /api/convert`
 Multipart. Zwraca obiekt `{"results": [...]}` — jeden wpis na plik.
@@ -275,9 +335,13 @@ przeglądarka.
 Błąd pojedynczego pliku (np. przekroczony limit rozmiaru) nie przerywa batcha:
 wpis dostaje `status: "error"` i wypełnione `error`, reszta konwertuje się
 normalnie. Całe żądanie kończy się natomiast kodem `400`, gdy plików jest
-więcej niż `MAX_FILES` albo batch przekracza `MAX_BATCH_MB`. Brak samego pola
-`files` daje `422` z walidacji FastAPI — pole jest wymagane, więc żądanie nie
-dociera do kontroli w handlerze.
+więcej niż `MAX_FILES` albo ich łączny rozmiar przekracza `MAX_BATCH_MB`.
+Brak samego pola `files` daje `422` z walidacji FastAPI — pole jest wymagane,
+więc żądanie nie dociera do kontroli w handlerze.
+
+Endpoint przerabia wszystko, co dostał, i odpowiada dopiero na końcu. Nie ma
+strumieniowania ani postępu per plik — stąd podział wysyłki po stronie
+frontendu.
 
 > `ocr_lang` jest po stronie serwera nieaktywne — OCR językowy wykonuje
 > przeglądarka, która czyta to ustawienie lokalnie. `ocr_confidence` jest
@@ -310,3 +374,7 @@ frontend/src/
   scripts/fetch-ocr-assets.mjs  pobranie workera, rdzenia WASM i modeli OCR
   public/tesseract/             te zasoby, serwowane z własnego origin
 ```
+
+## Licencja
+
+MIT — patrz [`LICENSE`](LICENSE).
