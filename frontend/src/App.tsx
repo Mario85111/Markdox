@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isImageName, ocrImageFile, ocrPdfFile, type OcrPage } from './ocrClient'
 
-const API_BASE = 'http://localhost:8000/api'
+// Adres backendu. Domyślnie localhost, bo aplikacja jest pomyślana do pracy
+// na maszynie użytkownika. Zaszycie go na sztywno oznaczało jednak, że frontend
+// wystawiony gdziekolwiek indziej nie miał z czym rozmawiać — a build Vite
+// podstawia `VITE_API_BASE` w czasie budowania, więc zmiana wymaga tylko
+// przebudowania, nie edycji kodu.
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api'
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,.docx,.pptx,.txt,.md'
 
 // Limity przychodzą z /api/health — backend jest ich jedynym źródłem, bo to on

@@ -243,6 +243,12 @@ npm run ocr:assets # jednorazowo — zasoby OCR do public/ (ok. 17 MB)
 npm run dev        # http://localhost:5173
 ```
 
+Adres backendu bierze się z `VITE_API_BASE`, a gdy zmiennej nie ma —
+z `http://localhost:8000/api`. Domyślny przypadek nie wymaga więc żadnej
+konfiguracji. Vite podstawia tę wartość **w czasie budowania**, nie startu,
+więc po zmianie `.env` trzeba przebudować frontend (wzór:
+[`frontend/.env.example`](frontend/.env.example)).
+
 ## Uruchomienie — Docker
 ```bash
 docker compose up --build
@@ -284,6 +290,10 @@ Przed wystawieniem go do sieci ustaw w `.env`:
 - `ALLOW_PRIVATE_AI_ENDPOINTS=false` — blokuje wskazywanie przez klienta
   endpointów AI w sieci prywatnej. Wyłącza to tryb **Lokalne** (Ollama na
   loopbacku), który ma sens wyłącznie przy backendzie uruchomionym lokalnie.
+
+Po stronie frontendu ustaw `VITE_API_BASE` na publiczny adres backendu
+i przebuduj — domyślny `localhost:8000` wskazuje na maszynę odwiedzającego,
+nie na serwer.
 
 ## API
 
@@ -364,3 +374,7 @@ frontend/src/
   scripts/fetch-ocr-assets.mjs  pobranie workera, rdzenia WASM i modeli OCR
   public/tesseract/             te zasoby, serwowane z własnego origin
 ```
+
+## Licencja
+
+MIT — patrz [`LICENSE`](LICENSE).
