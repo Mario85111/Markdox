@@ -3,3 +3,8 @@
 # przerabiałby im końce linii przy każdym checkoucie — bez wartości, za to
 # ze zmianą sum kontrolnych i szumem w diffach.
 frontend/public/tesseract/** -text -diff
+
+# …ale nota licencyjna i tekst Apache-2.0 to zwykłe pliki tekstowe i mają
+# być czytelne w diffach — inaczej zmiana licencji przeszłaby niezauważona.
+frontend/public/tesseract/NOTICE.md text diff
+frontend/public/tesseract/LICENSE-Apache-2.0.txt text diff

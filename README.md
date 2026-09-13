@@ -161,6 +161,14 @@ Fallbacku na CDN nie ma: w tesseract.js `langPath` i `corePath` wchodzą
 w miejsce adresu CDN, a nie obok niego. Zła ścieżka nie powoduje cichego
 sięgnięcia do sieci — worker po prostu nie wstaje.
 
+Wszystkie trzy zasoby są cudze i objęte **Apache-2.0**, a skoro leżą w repo
+i w buildzie, to je redystrybuujemy — Apache 2.0 wymaga wtedy dołączenia
+tekstu licencji i not. Ten sam skrypt generuje więc
+[`public/tesseract/NOTICE.md`](frontend/public/tesseract/NOTICE.md)
+(pochodzenie i wersje) oraz kopiuje `LICENSE-Apache-2.0.txt`. Generowanie,
+zamiast ręcznej noty, jest tu celowe: po podbiciu `tesseract.js` numery
+wersji w nocie aktualizują się razem z plikami.
+
 ### TXT / MD
 Kolejność rozpoznawania kodowania: BOM → UTF-8 → ocena wiarygodności kandydatów
 (`cp1250`, `iso-8859-2`, `cp1252`, `cp852`) → detektor ogólny → błąd.
@@ -377,4 +385,12 @@ frontend/src/
 
 ## Licencja
 
-MIT — patrz [`LICENSE`](LICENSE).
+Kod Markdoxa: **MIT** — patrz [`LICENSE`](LICENSE).
+
+Licencja obejmuje kod tego repozytorium, nie jego zależności:
+
+- zasoby OCR w [`frontend/public/tesseract/`](frontend/public/tesseract/) —
+  **Apache-2.0**, patrz [`NOTICE.md`](frontend/public/tesseract/NOTICE.md),
+- `pymupdf` i `pymupdf4llm` (tor A) — **AGPL-3.0** z komercyjną alternatywą
+  od Artifeksa. Przy wystawieniu Markdoxa jako usługi publicznej warunki AGPL
+  obejmują także dostęp przez sieć; sprawdź je przed wdrożeniem komercyjnym.
